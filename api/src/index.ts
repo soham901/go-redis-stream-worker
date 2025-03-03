@@ -43,6 +43,24 @@ app.get('/status/:id', (c) => {
 });
 
 
+// API to update message status (called by the backend consumer)
+app.post('/update-status', async (c) => {
+  const { id, status, result } = await c.req.json();
+
+  if (messageStatuses[id]) {
+    messageStatuses[id] = {
+      ...messageStatuses[id],
+      status,
+      result,
+      completedAt: status === 'completed' ? Date.now() : null
+    };
+    return c.json({ success: true });
+  } else {
+    return c.json({ error: 'Message not found' }, { status: 404 });
+  }
+});
+
+
 serve({
   fetch: app.fetch,
   port: 3000
