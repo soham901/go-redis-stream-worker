@@ -13,25 +13,42 @@ import (
 
 var (
 	ctx = context.Background()
-	rdb = redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	rdb *redis.Client
 )
 
 type StatusUpdate struct {
 	ID     string      `json:"id"`
 	Status string      `json:"status"`
-	Result any `json:"result"`
+	Result interface{} `json:"result"`
 }
 
 func main() {
-    fmt.Println("Starting worker...")
-	stream, group := "mystream", "mygroup"
-	rdb.XGroupCreateMkStream(ctx, stream, group, "0")
-	go worker("consumer-1", group, stream)
+	rdb = redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+
+	streamName := "mystream"
+	groupName := "mygroup"
+
+	// Create the consumer group if it doesn't exist
+	err := rdb.XGroupCreate(ctx, streamName, groupName, "0").Err()
+	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
+		fmt.Println("Error creating group:", err)
+	}
+
+	// Start multiple worker goroutines
+	for i := 0; i < 5; i++ {
+		consumerName := fmt.Sprintf("consumer-%d", i)
+		go worker(i, consumerName, groupName, streamName)
+	}
+
+	// Keep the main goroutine alive
 	select {}
 }
 
-func worker(consumer, group, stream string) {
+func worker(id int, consumer, group, stream string) {
 	for {
+		// Read new messages from the group
 		streams, err := rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    group,
 			Consumer: consumer,
@@ -39,32 +56,74 @@ func worker(consumer, group, stream string) {
 			Count:    1,
 			Block:    0,
 		}).Result()
+
 		if err != nil {
-			fmt.Println("Read error:", err)
-			time.Sleep(time.Second)
+			fmt.Println("Error reading group:", err)
+			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		for _, msg := range streams[0].Messages {
-			id, _ := msg.Values["id"].(string)
-			body, _ := msg.Values["body"].(string)
-			fmt.Println("Processing:", body)
+		for _, stream := range streams {
+			for _, message := range stream.Messages {
+				messageID, ok := message.Values["id"].(string)
+				if !ok {
+					fmt.Println("Invalid message ID format")
+					continue
+				}
 
-			updateStatus(id, "processing", nil)
-			time.Sleep(2 * time.Second)
-			updateStatus(id, "completed", "Processed: "+body)
-			rdb.XAck(ctx, stream, group, msg.ID)
+				messageBody, _ := message.Values["body"].(string)
+				fmt.Printf("Worker %d processing: %s\n", id, messageBody)
+
+				// Update status to 'processing'
+				updateStatus(messageID, "processing", nil)
+
+				// Simulate processing time
+				time.Sleep(2 * time.Second)
+
+				// Process the message and get result
+				result := fmt.Sprintf("Processed result for message %s", messageBody)
+
+				// Update status to 'completed' with result
+				updateStatus(messageID, "completed", result)
+
+				// Acknowledge the message
+				err := rdb.XAck(ctx, stream, group, message.ID).Err()
+				if err != nil {
+					fmt.Printf("Error acknowledging message: %v\n", err)
+				} else {
+					fmt.Printf("Worker %d acknowledged: %v\n", id, message.ID)
+				}
+			}
 		}
 	}
 }
 
 func updateStatus(id, status string, result interface{}) {
-	data, _ := json.Marshal(StatusUpdate{ID: id, Status: status, Result: result})
-	resp, err := http.Post("http://localhost:3000/update-status", "application/json", bytes.NewBuffer(data))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		fmt.Println("Status update failed")
+	statusUpdate := StatusUpdate{
+		ID:     id,
+		Status: status,
+		Result: result,
 	}
-	if resp != nil {
-		resp.Body.Close()
+
+	jsonData, err := json.Marshal(statusUpdate)
+	if err != nil {
+		fmt.Println("Error marshaling status update:", err)
+		return
+	}
+
+	resp, err := http.Post(
+		"http://localhost:3000/update-status",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	
+	if err != nil {
+		fmt.Println("Error updating status:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Failed to update status, status code: %d\n", resp.StatusCode)
 	}
 }
