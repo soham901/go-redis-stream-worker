@@ -87,7 +87,7 @@ func worker(id int, consumer, group, stream string) {
 				updateStatus(messageID, "completed", result)
 
 				// Acknowledge the message
-				err := rdb.XAck(ctx, stream, group, message.ID).Err()
+				err := rdb.XAck(ctx, stream.Stream, group, message.ID).Err()
 				if err != nil {
 					fmt.Printf("Error acknowledging message: %v\n", err)
 				} else {

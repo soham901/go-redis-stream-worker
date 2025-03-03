@@ -1,7 +1,9 @@
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
+import { Redis } from 'ioredis';
 
 const app = new Hono()
+const redis = new Redis();
 
 type Statuses = {
   [key: string]: {
@@ -17,8 +19,9 @@ const messageStatuses: Statuses = {}
 
 app.post('/produce', async (c) => {
   try {
+    const { message } = await c.req.json();
     const id = Date.now().toString();
-    const messageId = "message-" + id;
+    const messageId = await redis.xadd("mystream", "*", "id", id, "body", message);
 
     messageStatuses[id] = {
       status: 'pending',
